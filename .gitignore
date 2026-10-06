@@ -1,0 +1,11 @@
+# Virtual Environment
+venv/
+.env
+
+# Database & Runtime Logs
+*.db
+scout_log.txt
+
+# Python Cache
+__pycache__/
+*.py[cod]
