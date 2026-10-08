@@ -1,98 +1,114 @@
 import sqlite3
 import json
 import httpx
-from pydantic import BaseModel, Field
-from typing import List, Optional
+from typing import List
+from models import JobPosting
+from hn_adapter import fetch_hn_jobs
 
-# --- 1. DATA MODEL (Data Contract) ---
-# This ensures every job has valid types before touching our database.
-class JobPosting(BaseModel):
-    id: str
-    position: str
-    company: str
-    url: str
-    tags: List[str] = Field(default_factory=list)
-    description: Optional[str] = ""
+REMOTEOK_API_URL = "https://remoteok.com/api"
+HEADERS = {
+    "User-Agent": "JobScoutAgent/2.0 (rohit; candidate matching engine)"
+}
 
-# --- 2. DATABASE SETUP ---
 def init_db(db_path: str = "jobs.db"):
     conn = sqlite3.connect(db_path)
     cursor = conn.cursor()
-    # id TEXT PRIMARY KEY ensures no duplicates can ever be inserted
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS jobs (
             id TEXT PRIMARY KEY,
             position TEXT,
             company TEXT,
-            url TEXT,
+            location TEXT DEFAULT 'Remote',
             tags TEXT,
             description TEXT,
+            url TEXT,
+            source TEXT DEFAULT 'remoteok',
+            match_score INTEGER DEFAULT NULL,
+            evaluation_reason TEXT DEFAULT NULL,
+            is_reviewed INTEGER DEFAULT 0,
+            is_dispatched INTEGER DEFAULT 0,
+            llm_dossier TEXT DEFAULT NULL,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
+        );
     """)
+    
+    # Auto-migrate any columns if using an older database file
+    cursor.execute("PRAGMA table_info(jobs);")
+    existing_cols = {row[1] for row in cursor.fetchall()}
+    
+    for col, col_type in [("location", "TEXT DEFAULT 'Remote'"), ("source", "TEXT DEFAULT 'remoteok'")]:
+        if col not in existing_cols:
+            cursor.execute(f"ALTER TABLE jobs ADD COLUMN {col} {col_type};")
+
     conn.commit()
-    return conn
+    conn.close()
 
-# --- 3. INGESTION ENGINE ---
-def run_pipeline():
-    conn = init_db()
+def fetch_remoteok_jobs() -> List[JobPosting]:
+    try:
+        response = httpx.get(REMOTEOK_API_URL, headers=HEADERS, timeout=15.0)
+        response.raise_for_status()
+        raw_data = response.json()
+        
+        postings = []
+        for item in raw_data:
+            if not isinstance(item, dict) or "id" not in item:
+                continue
+            postings.append(JobPosting(
+                id=str(item.get("id")),
+                position=item.get("position", "Unknown"),
+                company=item.get("company", "Unknown"),
+                location=item.get("location", "Remote"),
+                tags=item.get("tags", []),
+                description=item.get("description", ""),
+                url=item.get("url", f"https://remoteok.com/l/{item.get('id')}"),
+                source="remoteok"
+            ))
+        return postings
+    except Exception as e:
+        print(f"❌ RemoteOK Fetch Error: {e}")
+        return []
+
+def store_jobs(jobs: List[JobPosting], db_path: str = "jobs.db") -> int:
+    conn = sqlite3.connect(db_path)
     cursor = conn.cursor()
-    
-    url = "https://remoteok.com/api"
-    # RemoteOK requires a custom User-Agent header, otherwise it blocks Python scripts
-    headers = {"User-Agent": "JobScoutBot/1.0 (Student Project)"}
-    
-    print("📡 Fetching live jobs from API...")
-    response = httpx.get(url, headers=headers, timeout=15.0)
-    
-    if response.status_code != 200:
-        print(f"❌ Failed to fetch: HTTP {response.status_code}")
-        return
-
-    raw_items = response.json()
-    # The first item in RemoteOK's API output is a legal disclaimer, not a job, so we skip it
-    job_items = [item for item in raw_items if "id" in item]
-    
     new_jobs_count = 0
 
-    print(f"🔍 Parsing {len(job_items)} postings through Pydantic...")
-    for item in job_items:
+    for job in jobs:
         try:
-            # Pydantic validates and normalizes the raw dict
-            job = JobPosting(
-                id=str(item.get("id")),
-                position=item.get("position", "Unknown Title"),
-                company=item.get("company", "Unknown Company"),
-                url=item.get("url", ""),
-                tags=item.get("tags", []) if isinstance(item.get("tags"), list) else [],
-                description=item.get("description", "")
-            )
-            
-            # INSERT OR IGNORE skips silently if job.id already exists in SQLite
             cursor.execute("""
-                INSERT OR IGNORE INTO jobs (id, position, company, url, tags, description)
-                VALUES (?, ?, ?, ?, ?, ?)
+                INSERT INTO jobs (id, position, company, location, tags, description, url, source)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?);
             """, (
                 job.id,
                 job.position,
                 job.company,
+                job.location,
+                json.dumps(job.tags),
+                job.description,
                 job.url,
-                json.dumps(job.tags),  # Store list as a JSON string in SQLite
-                job.description
+                job.source
             ))
-            
-            # If a row was actually inserted (not ignored), increment counter
-            if cursor.rowcount > 0:
-                new_jobs_count += 1
-                
-        except Exception as err:
-            # If an item has weird corrupted data, log and keep going
-            print(f"⚠️ Skipped malformed record: {err}")
+            new_jobs_count += 1
+        except sqlite3.IntegrityError:
+            # Primary key collision: already ingested
             continue
 
     conn.commit()
     conn.close()
-    print(f"✅ Success! Ingested {new_jobs_count} brand-new jobs into jobs.db")
+    return new_jobs_count
+
+def run_pipeline():
+    init_db()
+    
+    print("📡 [1/2] Fetching RemoteOK postings...")
+    rok_jobs = fetch_remoteok_jobs()
+    
+    print("📡 [2/2] Fetching Hacker News postings...")
+    hn_jobs = fetch_hn_jobs(max_items=20)
+    
+    all_jobs = rok_jobs + hn_jobs
+    new_count = store_jobs(all_jobs)
+    print(f"✅ Ingestion complete: {len(all_jobs)} total parsed, {new_count} brand-new stored.")
 
 if __name__ == "__main__":
     run_pipeline()

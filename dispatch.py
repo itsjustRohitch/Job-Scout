@@ -1,32 +1,28 @@
+import os
 import sqlite3
 import html
 import httpx
+from dotenv import load_dotenv
 from analyzer import analyze_job_fit
-import os
 
-# --- CONFIGURATION ---
-BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "YOUR_BOT_TOKEN_HERE")
-CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "YOUR_CHAT_ID_HERE")
+load_dotenv()
+BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
+CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "").strip()
+
+if not BOT_TOKEN or not CHAT_ID:
+    print("⚠️ Warning: TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID missing in .env")
 
 def update_schema_for_dispatch(db_path: str = "jobs.db"):
     conn = sqlite3.connect(db_path)
     cursor = conn.cursor()
-    
-    # Check/add is_dispatched independently
     try:
         cursor.execute("ALTER TABLE jobs ADD COLUMN is_dispatched INTEGER DEFAULT 0;")
-        conn.commit()
-    except sqlite3.OperationalError:
-        pass
-
-    # Check/add llm_dossier independently
-    try:
         cursor.execute("ALTER TABLE jobs ADD COLUMN llm_dossier TEXT DEFAULT NULL;")
         conn.commit()
     except sqlite3.OperationalError:
         pass
-        
-    conn.close()
+    finally:
+        conn.close()
 
 def send_telegram_message(message: str) -> bool:
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
