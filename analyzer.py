@@ -1,110 +1,80 @@
-import subprocess
-import time
+import json
+import os
 import httpx
-import re
 
-OLLAMA_URL = "http://localhost:11434/api/generate"
-OLLAMA_HEALTH = "http://localhost:11434"
+OLLAMA_GENERATE_URL = "http://localhost:11434/api/generate"
 MODEL_NAME = "gemma3:4b"
+PROFILE_PATH = os.path.join(os.path.dirname(__file__), "profile.json")
 
-CANDIDATE_PROFILE = """
-Candidate: Rohit
-Target Roles: Junior Backend Developer / Software Engineer / Data Analyst
-Skills: Python, SQL, SQLite, Pydantic, REST APIs, Git, Basic ML, Data Structures & Algorithms
-Profile: Final-year B.Tech student targeting internships and entry-level positions.
-"""
+def load_candidate_profile() -> dict:
+    """Loads candidate data from profile.json or returns safe defaults."""
+    if not os.path.exists(PROFILE_PATH):
+        return {
+            "name": "Candidate",
+            "core_skills": ["Python", "Backend Development"],
+            "notable_projects": [],
+            "pitch_style": "Technical and concise"
+        }
+    with open(PROFILE_PATH, "r", encoding="utf-8") as f:
+        return json.load(f)
 
-def is_ollama_online() -> bool:
-    """Quick 1-second ping to check if the Ollama local daemon is listening."""
-    try:
-        r = httpx.get(OLLAMA_HEALTH, timeout=1.0)
-        return r.status_code == 200
-    except Exception:
-        return False
+def build_system_context(profile: dict) -> str:
+    skills_str = ", ".join(profile.get("core_skills", []))
+    projects_str = "\n".join([
+        f"- {p['name']}: {p['description']}" 
+        for p in profile.get("notable_projects", [])
+    ])
+    
+    return f"""Candidate Name: {profile.get('name', 'Candidate')}
+Core Skills: {skills_str}
+Key Projects:
+{projects_str}
+Pitch Tone: {profile.get('pitch_style', 'Technical, direct')}"""
 
-def ensure_ollama_running() -> bool:
-    """
-    If Ollama is down, boots 'ollama serve' as a silent background process
-    and polls until it is ready.
-    """
-    if is_ollama_online():
-        return True
+def analyze_job_fit(position: str, company: str, description: str) -> str:
+    """Uses local Gemma 3:4B to evaluate fit against the candidate's real profile."""
+    profile = load_candidate_profile()
+    profile_context = build_system_context(profile)
+    
+    prompt = f"""You are a technical career coach. Evaluate how well this candidate fits the following job posting.
 
-    print("⚠️ Ollama is not active. Launching background daemon...")
-    try:
-        # Launch headless process on Windows without opening a console window
-        subprocess.Popen(
-            ["ollama", "serve"],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            creationflags=subprocess.CREATE_NO_WINDOW if hasattr(subprocess, "CREATE_NO_WINDOW") else 0
-        )
-        
-        # Wait up to 6 seconds for the daemon to initialize
-        for _ in range(6):
-            time.sleep(1.0)
-            if is_ollama_online():
-                print("✅ Ollama background service is up and running.")
-                return True
-                
-        print("❌ Ollama launch timed out.")
-        return False
-    except FileNotFoundError:
-        print("❌ 'ollama' executable not found in system PATH.")
-        return False
+=== CANDIDATE PROFILE ===
+{profile_context}
 
-def clean_html(raw_html: str) -> str:
-    cleanr = re.compile(r"<.*?>")
-    cleantext = re.sub(cleanr, "", raw_html)
-    return " ".join(cleantext.split())
+=== TARGET JOB ===
+Position: {position}
+Company: {company}
+Description:
+{description[:1500]}
 
-def analyze_job_fit(job_title: str, company: str, job_description: str) -> str:
-    """
-    Runs job fit analysis. Falls back gracefully if Ollama cannot be started.
-    """
-    if not ensure_ollama_running():
-        return "• LLM Gap Analysis skipped (Ollama service unavailable)."
+=== INSTRUCTIONS ===
+Generate EXACTLY 3 bullet points using this format:
+* Alignment: [Specific technical match between candidate's projects/skills and the job]
+* Missing Tool: [One critical tool/skill from the job description the candidate needs to highlight or learn]
+* Project Angle: [A concise, concrete project pitch showing how the candidate can solve a real problem for this company]
 
-    cleaned_desc = clean_html(job_description)[:1000]
-    prompt = f"""
-You are a direct, technical career mentor. Compare the candidate against this job.
-
-{CANDIDATE_PROFILE}
-
-Role: {job_title} @ {company}
-Description snippet:
-{cleaned_desc}
-
-Provide EXACTLY three concise bullet points:
-• Alignment: 1 core skill match between candidate and role.
-• Missing Tool: 1-2 specific tech stack items in the description that the candidate must highlight or review.
-• Project Angle: 1 actionable way to pitch this project (Python/SQLite ingestion agent) for this specific role.
-
-Keep each bullet under 20 words. No conversational filler or introductions.
-"""
+Do not include conversational filler, greetings, or extra text."""
 
     try:
         response = httpx.post(
-            OLLAMA_URL,
+            OLLAMA_GENERATE_URL,
             json={
                 "model": MODEL_NAME,
                 "prompt": prompt,
-                "stream": False,
-                "keep_alive": "10m"
+                "stream": False
             },
-            timeout=90.0  # Increased to 90s for cold model loading into memory
+            timeout=90.0
         )
         if response.status_code == 200:
             return response.json().get("response", "").strip()
-        return "• LLM Gap Analysis unavailable (Non-200 API response)."
-    except httpx.TimeoutException:
-        return "• LLM Gap Analysis timed out (System busy)."
+        else:
+            return f"⚠️ LLM evaluation error (Status {response.status_code})"
     except Exception as e:
-        return f"• LLM Gap Analysis skipped: {e}"
+        return f"⚠️ LLM offline or unreachable: {str(e)[:50]}"
 
 if __name__ == "__main__":
-    print("Testing auto-start & analysis pipeline...")
-    sample_desc = "<p>Looking for a Python Backend Intern with experience in SQL, APIs, and Docker to build data pipelines.</p>"
-    result = analyze_job_fit("Backend Intern", "Startup Inc", sample_desc)
-    print("\n--- Output ---")
-    print(result)
+    print("Testing dynamic profile integration...")
+    sample_desc = "Seeking a Backend Python Engineer to build scalable data ingestion pipelines, design RESTful APIs, and handle event-driven microservices."
+    dossier = analyze_job_fit("Backend Engineer", "DataFlow Corp", sample_desc)
+    print("\nGenerated Dossier:")
+    print(dossier)

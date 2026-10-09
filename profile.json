@@ -1,0 +1,28 @@
+{
+    "name": "Rohit",
+    "target_roles": [
+        "Software Engineer",
+        "Backend Developer",
+        "AI / ML Engineer",
+        "Python Developer"
+    ],
+    "core_skills": [
+        "Python",
+        "Data Structures & Algorithms",
+        "SQLite / SQL",
+        "REST APIs & Webhooks",
+        "Pydantic & Data Validation",
+        "Local LLM Orchestration (Ollama / Gemma)"
+    ],
+    "notable_projects": [
+        {
+            "name": "Autonomous Job Scout Agent",
+            "description": "Production-minded pipeline fetching multi-source jobs (REST APIs, Firebase), enforcing schema validation via Pydantic, persistent SQLite state machine, deterministic heuristic scoring, and local Gemma LLM gap analysis with Telegram webhooks."
+        },
+        {
+            "name": "Algorithm & LeetCode Patterns",
+            "description": "Proficient in Python implementations of two-pointer techniques, sliding window, and algorithmic complexity analysis (Big-O)."
+        }
+    ],
+    "pitch_style": "Direct, technical, and engineering-focused. Emphasize systems architecture, data pipeline integrity, and execution over boilerplate buzzwords."
+}
