@@ -13,9 +13,26 @@ if not BOT_TOKEN:
     raise ValueError("TELEGRAM_BOT_TOKEN missing in .env")
 
 BASE_URL = f"https://api.telegram.org/bot{BOT_TOKEN}"
+OLLAMA_GENERATE_URL = "http://localhost:11434/api/generate"
+MODEL_NAME = "gemma3:4b"
+
+def register_bot_commands():
+    """Registers bot commands with Telegram so they appear in the UI command menu."""
+    commands = [
+        {"command": "status", "description": "View scout metrics and triage tallies"},
+        {"command": "saved", "description": "List jobs marked for application"},
+        {"command": "pitch", "description": "Generate cold pitch: /pitch <job_id>"},
+        {"command": "run", "description": "Trigger an immediate scout pipeline sweep"},
+        {"command": "help", "description": "Show available bot commands"}
+    ]
+    try:
+        resp = httpx.post(f"{BASE_URL}/setMyCommands", json={"commands": commands}, timeout=10.0)
+        if resp.status_code == 200:
+            print("📋 Registered Telegram command menu successfully.")
+    except Exception as e:
+        print(f"⚠️ Failed to register command menu: {e}")
 
 def send_reply(chat_id: str, text: str, parse_mode: str = "HTML"):
-    """Sends a text message back to the specified Telegram chat."""
     try:
         httpx.post(
             f"{BASE_URL}/sendMessage",
@@ -43,7 +60,6 @@ def update_job_status(job_id: str, new_status: str, db_path: str = "jobs.db") ->
         return False
 
 def answer_callback_query(callback_query_id: str, text: str):
-    """Acknowledges button clicks with a toast notification."""
     try:
         httpx.post(
             f"{BASE_URL}/answerCallbackQuery",
@@ -54,10 +70,8 @@ def answer_callback_query(callback_query_id: str, text: str):
         print(f"⚠️ Failed to answer callback query: {e}")
 
 def get_pipeline_stats(db_path: str = "jobs.db") -> str:
-    """Calculates live pipeline tallies from SQLite."""
     conn = sqlite3.connect(db_path)
     cursor = conn.cursor()
-
     cursor.execute("SELECT COUNT(*) FROM jobs;")
     total_jobs = cursor.fetchone()[0]
 
@@ -68,28 +82,22 @@ def get_pipeline_stats(db_path: str = "jobs.db") -> str:
     counts = dict(cursor.fetchall())
     conn.close()
 
-    applied = counts.get("applied", 0)
-    saved = counts.get("saved", 0)
-    passed = counts.get("pass", 0)
-    pending = counts.get("pending", 0)
-
     return (
         f"📊 <b>Job Scout Pipeline Status</b>\n\n"
         f"📥 <b>Total Ingested:</b> {total_jobs}\n"
         f"🎯 <b>Matches (>=60):</b> {matches}\n\n"
         f"<b>Tracker Breakdown:</b>\n"
-        f"• 🎉 Applied: <b>{applied}</b>\n"
-        f"• ⭐ Saved: <b>{saved}</b>\n"
-        f"• 🗑️ Passed: <b>{passed}</b>\n"
-        f"• ⏳ Pending Triage: <b>{pending}</b>"
+        f"• 🎉 Applied: <b>{counts.get('applied', 0)}</b>\n"
+        f"• ⭐ Saved: <b>{counts.get('saved', 0)}</b>\n"
+        f"• 🗑️ Passed: <b>{counts.get('pass', 0)}</b>\n"
+        f"• ⏳ Pending: <b>{counts.get('pending', 0)}</b>"
     )
 
 def get_saved_jobs(db_path: str = "jobs.db", limit: int = 5) -> str:
-    """Returns top saved opportunities awaiting application."""
     conn = sqlite3.connect(db_path)
     cursor = conn.cursor()
     cursor.execute("""
-        SELECT position, company, url 
+        SELECT id, position, company, url 
         FROM jobs 
         WHERE application_status = 'saved'
         ORDER BY match_score DESC
@@ -102,42 +110,97 @@ def get_saved_jobs(db_path: str = "jobs.db", limit: int = 5) -> str:
         return "⭐ No jobs currently marked as <b>Saved</b>."
 
     lines = ["⭐ <b>Active Saved Roles:</b>\n"]
-    for pos, comp, url in rows:
-        lines.append(f"• <b>{pos}</b> @ {comp}\n  🔗 <a href='{url}'>Apply Link</a>")
+    for jid, pos, comp, url in rows:
+        lines.append(f"• <b>{pos}</b> @ {comp}\n  🆔 <code>{jid}</code>\n  🔗 <a href='{url}'>Apply Link</a>")
     return "\n\n".join(lines)
 
+def generate_pitch(job_identifier: str, db_path: str = "jobs.db") -> str:
+    """Uses Gemma 3:4B to draft a concise, high-impact cold message."""
+    conn = sqlite3.connect(db_path)
+    cursor = conn.cursor()
+    # Search by exact id or company name substring
+    cursor.execute("""
+        SELECT id, position, company, description 
+        FROM jobs 
+        WHERE id = ? OR company LIKE ?
+        LIMIT 1;
+    """, (job_identifier, f"%{job_identifier}%"))
+    row = cursor.fetchone()
+    conn.close()
+
+    if not row:
+        return f"⚠️ No posting found matching ID/Company: <code>{job_identifier}</code>"
+
+    _, pos, comp, desc = row
+    
+    # Load profile context
+    from analyzer import load_candidate_profile, build_system_context
+    profile = load_candidate_profile()
+    profile_ctx = build_system_context(profile)
+
+    prompt = f"""You are a direct, senior software engineer. Write a cold outreach message (max 120 words) from {profile.get('name', 'Rohit')} to the hiring team at {comp} for the {pos} role.
+
+Candidate Background:
+{profile_ctx}
+
+Job Details:
+{desc[:1200]}
+
+Rules:
+1. No generic greetings ("I hope this finds you well"). Start directly with value.
+2. Specifically cite Rohit's Python data pipeline / LLM orchestration work and connect it directly to their tech needs.
+3. Professional, crisp, low fluff, ending with a straightforward call to chat."""
+
+    try:
+        resp = httpx.post(
+            OLLAMA_GENERATE_URL,
+            json={"model": MODEL_NAME, "prompt": prompt, "stream": False},
+            timeout=90.0
+        )
+        if resp.status_code == 200:
+            pitch_text = resp.json().get("response", "").strip()
+            return f"✉️ <b>Pitch for {pos} @ {comp}:</b>\n\n{pitch_text}"
+        return f"⚠️ LLM Error: HTTP {resp.status_code}"
+    except Exception as e:
+        return f"⚠️ Failed to generate pitch: {str(e)[:60]}"
+
 def handle_text_command(text: str, chat_id: str):
-    """Dispatches slash commands received from Telegram."""
-    cmd = text.strip().split()[0].lower()
+    parts = text.strip().split(maxsplit=1)
+    cmd = parts[0].lower()
+    arg = parts[1].strip() if len(parts) > 1 else ""
 
     if cmd in ["/status", "/stats"]:
-        stats_msg = get_pipeline_stats()
-        send_reply(chat_id, stats_msg)
+        send_reply(chat_id, get_pipeline_stats())
 
     elif cmd == "/saved":
-        saved_msg = get_saved_jobs()
-        send_reply(chat_id, saved_msg)
+        send_reply(chat_id, get_saved_jobs())
+
+    elif cmd == "/pitch":
+        if not arg:
+            send_reply(chat_id, "ℹ️ Usage: <code>/pitch &lt;job_id_or_company&gt;</code>\nExample: <code>/pitch Reddit</code>")
+            return
+        send_reply(chat_id, f"✍️ Drafting pitch for <code>{arg}</code>...")
+        pitch = generate_pitch(arg)
+        send_reply(chat_id, pitch)
 
     elif cmd == "/run":
         send_reply(chat_id, "🚀 Triggering scout cycle in background...")
-        # Run sweep without blocking long-polling listener
         from main import run_scout_cycle
-        def worker():
-            run_scout_cycle()
-            send_reply(chat_id, "✅ Manual scout cycle complete.")
-        threading.Thread(target=worker, daemon=True).start()
+        threading.Thread(target=run_scout_cycle, daemon=True).start()
 
     elif cmd in ["/start", "/help"]:
         help_text = (
             "🤖 <b>Job Scout Command Deck</b>\n\n"
-            "• <code>/status</code> - View pipeline metrics and triage tallies\n"
-            "• <code>/saved</code> - List roles saved for application\n"
+            "• <code>/status</code> - View pipeline tallies\n"
+            "• <code>/saved</code> - View saved jobs and IDs\n"
+            "• <code>/pitch &lt;id/company&gt;</code> - Generate outreach email\n"
             "• <code>/run</code> - Trigger an immediate scout sweep\n"
-            "• <code>/help</code> - Show available commands"
+            "• <code>/help</code> - Show command list"
         )
         send_reply(chat_id, help_text)
 
 def run_listener():
+    register_bot_commands()
     print("🤖 Telegram Action Listener started. Polling for commands & clicks...")
     offset = 0
 
@@ -154,50 +217,39 @@ def run_listener():
                 time.sleep(3)
                 continue
 
-            data = resp.json()
-            updates = data.get("result", [])
-
-            for item in updates:
+            for item in resp.json().get("result", []):
                 offset = item["update_id"] + 1
 
-                # 1. Handle Inline Button Clicks
                 if "callback_query" in item:
                     cb = item["callback_query"]
-                    cb_id = cb["id"]
                     cb_data = cb.get("data", "")
-
                     if ":" in cb_data:
                         action, job_id = cb_data.split(":", 1)
-                        success = update_job_status(job_id, action)
-
-                        status_messages = {
-                            "applied": "🎉 Marked as APPLIED! Added to tracking list.",
-                            "saved": "⭐ Saved for review later.",
+                        update_job_status(job_id, action)
+                        toasts = {
+                            "applied": "🎉 Marked as APPLIED!",
+                            "saved": "⭐ Saved for review.",
                             "pass": "🗑️ Passed and archived."
                         }
-                        toast = status_messages.get(action, f"Updated to: {action}")
-                        answer_callback_query(cb_id, toast)
-                        print(f"📥 State changed: Job [{job_id}] -> {action.upper()} (DB updated: {success})")
+                        answer_callback_query(cb["id"], toasts.get(action, "Updated"))
+                        print(f"📥 State changed: Job [{job_id}] -> {action.upper()}")
 
-                # 2. Handle Text Slash Commands
                 elif "message" in item:
                     msg = item["message"]
-                    sender_chat_id = str(msg.get("chat", {}).get("id", ""))
+                    sender_id = str(msg.get("chat", {}).get("id", ""))
                     msg_text = msg.get("text", "")
 
-                    # Security check: only allow commands from your configured CHAT_ID
-                    if CHAT_ID and sender_chat_id != CHAT_ID:
+                    if CHAT_ID and sender_id != CHAT_ID:
                         continue
 
                     if msg_text.startswith("/"):
                         print(f"💬 Command received: {msg_text}")
-                        handle_text_command(msg_text, sender_chat_id)
+                        handle_text_command(msg_text, sender_id)
 
         except httpx.RequestError as e:
-            print(f"⚠️ Polling network exception: {e}")
             time.sleep(2)
         except KeyboardInterrupt:
-            print("\n🛑 Listener stopped by user.")
+            print("\n🛑 Listener stopped.")
             break
 
 if __name__ == "__main__":
