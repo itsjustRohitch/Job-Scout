@@ -7,6 +7,7 @@ from hn_adapter import fetch_hn_jobs
 from wwr_adapter import fetch_wwr_jobs
 from remotive_adapter import fetch_remotive_jobs
 from jobicy_adapter import fetch_jobicy_jobs
+from linkedin_guest_adapter import fetch_linkedin_india_jobs
 
 REMOTEOK_API_URL = "https://remoteok.com/api"
 HEADERS = {
@@ -108,26 +109,28 @@ def store_jobs(jobs: List[JobPosting], db_path: str = "jobs.db") -> int:
 
 def run_pipeline():
     init_db()
-    
-    print("📡 [1/5] Fetching RemoteOK postings...")
+
+    print("📡 [1/6] Fetching RemoteOK postings...")
     rok_jobs = fetch_remoteok_jobs()
-    
-    print("📡 [2/5] Fetching Hacker News postings...")
+
+    print("📡 [2/6] Fetching Hacker News postings...")
     hn_jobs = fetch_hn_jobs(max_items=20)
 
-    print("📡 [3/5] Fetching We Work Remotely postings...")
+    print("📡 [3/6] Fetching We Work Remotely postings...")
     wwr_jobs = fetch_wwr_jobs(limit=25)
 
-    print("📡 [4/5] Fetching Remotive postings...")
+    print("📡 [4/6] Fetching Remotive postings...")
     remotive_jobs = fetch_remotive_jobs(limit=25)
 
-    print("📡 [5/5] Fetching Jobicy postings...")
+    print("📡 [5/6] Fetching Jobicy postings...")
     jobicy_jobs = fetch_jobicy_jobs(limit=25)
-    
-    all_jobs = rok_jobs + hn_jobs + wwr_jobs + remotive_jobs + jobicy_jobs
-    new_count = store_jobs(all_jobs)
-    print(f"\n✅ Ingestion complete: {len(all_jobs)} parsed across 5 streams | {new_count} brand-new stored.")
 
+    print("📡 [6/6] Fetching LinkedIn India early-career postings...")
+    linkedin_jobs = fetch_linkedin_india_jobs(max_items=25)
+
+    all_jobs = rok_jobs + hn_jobs + wwr_jobs + remotive_jobs + jobicy_jobs + linkedin_jobs
+    new_count = store_jobs(all_jobs)
+    print(f"\n✅ Ingestion complete: {len(all_jobs)} parsed across 6 streams | {new_count} brand-new stored.")
 
 if __name__ == "__main__":
     run_pipeline()
