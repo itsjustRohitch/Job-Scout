@@ -1,9 +1,11 @@
 import os
 import time
-import sqlite3
 import threading
 import httpx
 from dotenv import load_dotenv
+
+import db
+from enricher import enrich_job_if_needed
 
 load_dotenv()
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
@@ -42,23 +44,6 @@ def send_reply(chat_id: str, text: str, parse_mode: str = "HTML"):
     except Exception as e:
         print(f"⚠️ Failed to send Telegram reply: {e}")
 
-def update_job_status(job_id: str, new_status: str, db_path: str = "jobs.db") -> bool:
-    try:
-        conn = sqlite3.connect(db_path)
-        cursor = conn.cursor()
-        cursor.execute("""
-            UPDATE jobs
-            SET application_status = ?, is_reviewed = 1
-            WHERE id = ?;
-        """, (new_status, job_id))
-        conn.commit()
-        updated = cursor.rowcount > 0
-        conn.close()
-        return updated
-    except Exception as e:
-        print(f"❌ DB update error: {e}")
-        return False
-
 def answer_callback_query(callback_query_id: str, text: str):
     try:
         httpx.post(
@@ -69,18 +54,17 @@ def answer_callback_query(callback_query_id: str, text: str):
     except Exception as e:
         print(f"⚠️ Failed to answer callback query: {e}")
 
-def get_pipeline_stats(db_path: str = "jobs.db") -> str:
-    conn = sqlite3.connect(db_path)
-    cursor = conn.cursor()
-    cursor.execute("SELECT COUNT(*) FROM jobs;")
-    total_jobs = cursor.fetchone()[0]
+def get_pipeline_stats() -> str:
+    with db.get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT COUNT(*) FROM jobs;")
+        total_jobs = cursor.fetchone()[0]
 
-    cursor.execute("SELECT COUNT(*) FROM jobs WHERE match_score >= 60;")
-    matches = cursor.fetchone()[0]
+        cursor.execute("SELECT COUNT(*) FROM jobs WHERE match_score >= 60;")
+        matches = cursor.fetchone()[0]
 
-    cursor.execute("SELECT application_status, COUNT(*) FROM jobs GROUP BY application_status;")
-    counts = dict(cursor.fetchall())
-    conn.close()
+        cursor.execute("SELECT application_status, COUNT(*) FROM jobs GROUP BY application_status;")
+        counts = dict(cursor.fetchall())
 
     return (
         f"📊 <b>Job Scout Pipeline Status</b>\n\n"
@@ -93,47 +77,48 @@ def get_pipeline_stats(db_path: str = "jobs.db") -> str:
         f"• ⏳ Pending: <b>{counts.get('pending', 0)}</b>"
     )
 
-def get_saved_jobs(db_path: str = "jobs.db", limit: int = 5) -> str:
-    conn = sqlite3.connect(db_path)
-    cursor = conn.cursor()
-    cursor.execute("""
-        SELECT id, position, company, url 
-        FROM jobs 
-        WHERE application_status = 'saved'
-        ORDER BY match_score DESC
-        LIMIT ?;
-    """, (limit,))
-    rows = cursor.fetchall()
-    conn.close()
+def get_saved_jobs(limit: int = 5) -> str:
+    with db.get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT id, position, company, url 
+            FROM jobs 
+            WHERE application_status = 'saved'
+            ORDER BY match_score DESC
+            LIMIT ?;
+        """, (limit,))
+        rows = cursor.fetchall()
 
     if not rows:
         return "⭐ No jobs currently marked as <b>Saved</b>."
 
     lines = ["⭐ <b>Active Saved Roles:</b>\n"]
-    for jid, pos, comp, url in rows:
-        lines.append(f"• <b>{pos}</b> @ {comp}\n  🆔 <code>{jid}</code>\n  🔗 <a href='{url}'>Apply Link</a>")
+    for row in rows:
+        lines.append(f"• <b>{row['position']}</b> @ {row['company']}\n  🆔 <code>{row['id']}</code>\n  🔗 <a href='{row['url']}'>Apply Link</a>")
     return "\n\n".join(lines)
 
-def generate_pitch(job_identifier: str, db_path: str = "jobs.db") -> str:
+def generate_pitch(job_identifier: str) -> str:
     """Uses Gemma 3:4B to draft a concise, high-impact cold message."""
-    conn = sqlite3.connect(db_path)
-    cursor = conn.cursor()
-    # Search by exact id or company name substring
-    cursor.execute("""
-        SELECT id, position, company, description 
-        FROM jobs 
-        WHERE id = ? OR company LIKE ?
-        LIMIT 1;
-    """, (job_identifier, f"%{job_identifier}%"))
-    row = cursor.fetchone()
-    conn.close()
+    with db.get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT id, position, company, description 
+            FROM jobs 
+            WHERE id = ? OR company LIKE ?
+            LIMIT 1;
+        """, (job_identifier, f"%{job_identifier}%"))
+        row = cursor.fetchone()
 
     if not row:
         return f"⚠️ No posting found matching ID/Company: <code>{job_identifier}</code>"
 
-    _, pos, comp, desc = row
-    
-    # Load profile context
+    job_id = row["id"]
+    pos = row["position"]
+    comp = row["company"]
+
+    # Target deep enrichment before prompt construction
+    full_desc = enrich_job_if_needed(job_id)
+
     from analyzer import load_candidate_profile, build_system_context
     profile = load_candidate_profile()
     profile_ctx = build_system_context(profile)
@@ -144,7 +129,7 @@ Candidate Background:
 {profile_ctx}
 
 Job Details:
-{desc[:1200]}
+{full_desc[:2500]}
 
 Rules:
 1. No generic greetings ("I hope this finds you well"). Start directly with value.
@@ -177,9 +162,9 @@ def handle_text_command(text: str, chat_id: str):
 
     elif cmd == "/pitch":
         if not arg:
-            send_reply(chat_id, "ℹ️ Usage: <code>/pitch &lt;job_id_or_company&gt;</code>\nExample: <code>/pitch Reddit</code>")
+            send_reply(chat_id, "ℹ️ Usage: <code>/pitch &lt;job_id_or_company&gt;</code>\nExample: <code>/pitch techolution</code>")
             return
-        send_reply(chat_id, f"✍️ Drafting pitch for <code>{arg}</code>...")
+        send_reply(chat_id, f"✍️ Enriching requirements & drafting pitch for <code>{arg}</code>...")
         pitch = generate_pitch(arg)
         send_reply(chat_id, pitch)
 
@@ -191,11 +176,11 @@ def handle_text_command(text: str, chat_id: str):
     elif cmd in ["/start", "/help"]:
         help_text = (
             "🤖 <b>Job Scout Command Deck</b>\n\n"
-            "• <code>/status</code> - View pipeline tallies\n"
-            "• <code>/saved</code> - View saved jobs and IDs\n"
-            "• <code>/pitch &lt;id/company&gt;</code> - Generate outreach email\n"
-            "• <code>/run</code> - Trigger an immediate scout sweep\n"
-            "• <code>/help</code> - Show command list"
+            "<code>/status</code> - View pipeline tallies\n"
+            "<code>/saved</code> - View saved jobs and IDs\n"
+            "<code>/pitch &lt;id/company&gt;</code> - Generate outreach email\n"
+            "<code>/run</code> - Trigger an immediate scout sweep\n"
+            "<code>/help</code> - Show command list\n"
         )
         send_reply(chat_id, help_text)
 
@@ -225,7 +210,7 @@ def run_listener():
                     cb_data = cb.get("data", "")
                     if ":" in cb_data:
                         action, job_id = cb_data.split(":", 1)
-                        update_job_status(job_id, action)
+                        db.update_job_status(job_id, action)
                         toasts = {
                             "applied": "🎉 Marked as APPLIED!",
                             "saved": "⭐ Saved for review.",
@@ -246,7 +231,7 @@ def run_listener():
                         print(f"💬 Command received: {msg_text}")
                         handle_text_command(msg_text, sender_id)
 
-        except httpx.RequestError as e:
+        except httpx.RequestError:
             time.sleep(2)
         except KeyboardInterrupt:
             print("\n🛑 Listener stopped.")
