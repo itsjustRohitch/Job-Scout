@@ -1,0 +1,25 @@
+version: '3.8'
+
+services:
+  web:
+    build: .
+    container_name: jobscout_dashboard
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./jobs.db:/app/jobs.db
+    env_file:
+      - .env
+
+  bot:
+    build: .
+    container_name: jobscout_bot
+    restart: unless-stopped
+    command: python bot_listener.py
+    volumes:
+      - ./jobs.db:/app/jobs.db
+    env_file:
+      - .env
+    depends_on:
+      - web
