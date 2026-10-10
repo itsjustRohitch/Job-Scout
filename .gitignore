@@ -9,3 +9,8 @@ scout_log.txt
 # Python Cache
 __pycache__/
 *.py[cod]
+.env
+jobs.db
+scout_log.txt
+*.pyc
+__pycache__/

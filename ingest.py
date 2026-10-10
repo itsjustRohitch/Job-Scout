@@ -3,12 +3,12 @@ from typing import List, Tuple
 
 import httpx
 from db import init_db, store_jobs
-from hn_adapter import fetch_hn_jobs
-from jobicy_adapter import fetch_jobicy_jobs
-from linkedin_guest_adapter import fetch_linkedin_india_jobs
+from adapters.hn_adapter import fetch_hn_jobs
+from adapters.jobicy_adapter import fetch_jobicy_jobs
+from adapters.linkedin_guest_adapter import fetch_linkedin_india_jobs
+from adapters.remotive_adapter import fetch_remotive_jobs
+from adapters.wwr_adapter import fetch_wwr_jobs
 from models import JobPosting
-from remotive_adapter import fetch_remotive_jobs
-from wwr_adapter import fetch_wwr_jobs
 
 REMOTEOK_API_URL = "https://remoteok.com/api"
 HEADERS = {
