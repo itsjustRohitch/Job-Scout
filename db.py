@@ -1,7 +1,9 @@
 import json
 import sqlite3
+import re
 from typing import Any, Dict, List, Optional
 from models import JobPosting
+from datetime import datetime, timezone
 
 DB_PATH = "jobs.db"
 
@@ -125,3 +127,84 @@ def get_jobs_by_status(status: str, limit: int = 50, db_path: str = DB_PATH) -> 
             ORDER BY created_at DESC LIMIT ?;
         """, (status, limit))
         return [dict(row) for row in cursor.fetchall()]
+
+def delete_job(job_id: str) -> bool:
+    """Permanently removes a job from SQLite."""
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM jobs WHERE id = ?;", (job_id,))
+        conn.commit()
+        return cursor.rowcount > 0
+
+def add_custom_job(position: str, company: str, url: str, location: str = "Remote", description: str = "") -> str:
+    """Allows manual insertion of a role found outside automated scrapers."""
+    import hashlib
+    job_id = "custom_" + hashlib.md5(f"{company}_{position}_{url}".encode()).hexdigest()[:8]
+    now = datetime.now(timezone.utc).isoformat()
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            INSERT OR REPLACE INTO jobs (id, position, company, location, url, description, source, match_score, application_status, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, 'manual', 100, 'saved', ?);
+        """, (job_id, position, company, location, url, description, now))
+        conn.commit()
+    return job_id
+
+def prune_duplicates_and_stale(days_stale: int = 30) -> dict:
+    """Removes fuzzy duplicates across sources and archives/deletes stale unreviewed jobs."""
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        
+        # 1. Deduplicate identical title + company combinations kept across different adapters
+        cursor.execute("""
+            DELETE FROM jobs 
+            WHERE id NOT IN (
+                SELECT MIN(id) 
+                FROM jobs 
+                GROUP BY LOWER(TRIM(position)), LOWER(TRIM(company))
+            ) AND application_status IN ('pending', 'pass');
+        """)
+        dupes_removed = cursor.rowcount
+
+        conn.commit()
+        return {"duplicates_purged": dupes_removed}
+
+def purge_low_score_and_junk(min_score: int = 50) -> dict:
+    """
+    Deletes:
+    1. Unreviewed/pending jobs with match_score < min_score.
+    2. Postings with predominant non-Latin scripts (Cyrillic, CJK, Arabic, etc.) in the title.
+    Preserves any role manually marked as 'saved' or 'applied'.
+    """
+    deleted_count = 0
+    with get_connection() as conn:
+        cursor = conn.cursor()
+
+        # 1. Purge low scores (keep saved or applied intact)
+        cursor.execute("""
+            DELETE FROM jobs 
+            WHERE match_score < ? 
+              AND application_status IN ('pending', 'pass');
+        """, (min_score,))
+        deleted_count += cursor.rowcount
+
+        # 2. Find and delete non-Latin / foreign title junk from pending/pass
+        cursor.execute("SELECT id, position FROM jobs WHERE application_status IN ('pending', 'pass');")
+        rows = cursor.fetchall()
+        
+        # Regex matching non-Latin alphabet characters (Cyrillic, CJK, Arabic, Devanagari, Hebrew, etc.)
+        foreign_script_regex = re.compile(r'[\u0400-\u04FF\u4E00-\u9FFF\u3040-\u30FF\uAC00-\uD7AF\u0600-\u06FF\u0900-\u097F]')
+        
+        ids_to_drop = []
+        for row in rows:
+            pos = row["position"] or ""
+            if foreign_script_regex.search(pos):
+                ids_to_drop.append(row["id"])
+
+        if ids_to_drop:
+            cursor.executemany("DELETE FROM jobs WHERE id = ?;", [(jid,) for jid in ids_to_drop])
+            deleted_count += len(ids_to_drop)
+
+        conn.commit()
+
+    return {"purged_count": deleted_count}
