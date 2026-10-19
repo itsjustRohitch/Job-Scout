@@ -20,7 +20,7 @@ jobs:
           python-version: '3.11'
           cache: 'pip'
 
-            - name: Clean pip cache
+      - name: Clean pip cache
         run: python -m pip cache purge || true
 
       - name: Install dependencies
