@@ -13,13 +13,13 @@ from bot_listener import generate_pitch
 # --- 1. Tool Implementations ---
 
 def tool_get_unreviewed_jobs(limit: int = 5) -> str:
-    """Fetches up to `limit` unreviewed jobs with match_score >= 50."""
+    """Fetches up to `limit` unreviewed jobs with match_score >= 70."""
     with db.get_connection() as conn:
         cursor = conn.cursor()
         cursor.execute("""
             SELECT id, position, company, location, match_score, url 
             FROM jobs 
-            WHERE application_status = 'pending' AND match_score >= 50
+            WHERE application_status = 'pending' AND match_score >= 70
             ORDER BY match_score DESC, created_at DESC 
             LIMIT ?;
         """, (limit,))

@@ -60,7 +60,7 @@ def send_telegram_alert(job_id: str, title: str, company: str, score: int, reaso
         print(f"❌ Failed to deliver Telegram message: {e}")
         return False
 
-def dispatch_top_jobs(db_path: str = "jobs.db", min_score: int = 60, limit: int = 3):
+def dispatch_top_jobs(db_path: str = "jobs.db", min_score: int = 70, limit: int = 3):
     conn = sqlite3.connect(db_path)
     cursor = conn.cursor()
 

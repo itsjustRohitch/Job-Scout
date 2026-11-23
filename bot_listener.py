@@ -60,7 +60,7 @@ def get_pipeline_stats() -> str:
         cursor.execute("SELECT COUNT(*) FROM jobs;")
         total_jobs = cursor.fetchone()[0]
 
-        cursor.execute("SELECT COUNT(*) FROM jobs WHERE match_score >= 60;")
+        cursor.execute("SELECT COUNT(*) FROM jobs WHERE match_score >= 70;")
         matches = cursor.fetchone()[0]
 
         cursor.execute("SELECT application_status, COUNT(*) FROM jobs GROUP BY application_status;")
@@ -69,7 +69,7 @@ def get_pipeline_stats() -> str:
     return (
         f"📊 <b>Job Scout Pipeline Status</b>\n\n"
         f"📥 <b>Total Ingested:</b> {total_jobs}\n"
-        f"🎯 <b>Matches (>=60):</b> {matches}\n\n"
+        f"🎯 <b>Matches (>=70):</b> {matches}\n\n"
         f"<b>Tracker Breakdown:</b>\n"
         f"• 🎉 Applied: <b>{counts.get('applied', 0)}</b>\n"
         f"• ⭐ Saved: <b>{counts.get('saved', 0)}</b>\n"

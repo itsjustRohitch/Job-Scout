@@ -16,18 +16,22 @@ class CustomJobInput(BaseModel):
 
 
 @app.get("/api/jobs")
-def get_jobs(status: str = "all"):
+def get_jobs(status: str = "all", days: Optional[int] = 7, min_score: Optional[int] = 70):
     with db.get_connection() as conn:
         cursor = conn.cursor()
-        if status == "all":
-            cursor.execute(
-                "SELECT * FROM jobs ORDER BY match_score DESC, created_at DESC LIMIT 150;"
-            )
-        else:
-            cursor.execute(
-                "SELECT * FROM jobs WHERE application_status = ? ORDER BY match_score DESC, created_at DESC LIMIT 150;",
-                (status,),
-            )
+        query = "SELECT * FROM jobs WHERE 1=1"
+        params = []
+        if status != "all":
+            query += " AND application_status = ?"
+            params.append(status)
+        if min_score is not None and status != "pass":
+            query += " AND match_score >= ?"
+            params.append(min_score)
+        if days:
+            query += " AND created_at >= datetime('now', ?)"
+            params.append(f"-{days} days")
+        query += " ORDER BY created_at DESC;"
+        cursor.execute(query, params)
         return [dict(row) for row in cursor.fetchall()]
 
 
@@ -72,7 +76,7 @@ def get_stats():
         cursor.execute("SELECT COUNT(*) FROM jobs;")
         total = cursor.fetchone()[0]
 
-        cursor.execute("SELECT COUNT(*) FROM jobs WHERE match_score >= 60;")
+        cursor.execute("SELECT COUNT(*) FROM jobs WHERE match_score >= 70;")
         matches = cursor.fetchone()[0]
 
         cursor.execute(
@@ -93,7 +97,7 @@ def get_stats():
 
 @app.get("/", response_class=HTMLResponse)
 def index():
-    return """
+    return r"""
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -139,22 +143,28 @@ def index():
           <button onclick="pruneDatabase()" class="px-3 py-1.5 rounded-lg text-xs font-mono bg-charcoal-800 hover:bg-rose-950/40 text-neutral-300 border border-charcoal-700 transition" title="Removes duplicate postings across scrapers">
             🧹 Prune Dupes
           </button>
-          <button onclick="purgeJunk()" class="px-3 py-1.5 rounded-lg text-xs font-mono bg-charcoal-800 hover:bg-rose-950/40 text-rose-300 border border-charcoal-700 transition" title="Purges <50% score and foreign-language postings">
-            🗑️ Purge < 50%
+          <button onclick="purgeJunk()" class="px-3 py-1.5 rounded-lg text-xs font-mono bg-charcoal-800 hover:bg-rose-950/40 text-rose-300 border border-charcoal-700 transition" title="Purges <70% score and foreign-language postings">
+            🗑️ Purge < 70%
           </button>
         </div>
       </div>
     </header>
 
     <!-- Filter Pills -->
-    <div class="flex items-center gap-3">
-      <span class="text-[11px] font-mono uppercase tracking-wider text-neutral-500">Status:</span>
-      <div class="flex flex-wrap gap-2" id="filter-buttons">
-        <button onclick="loadJobs('all')" class="filter-btn px-3 py-1 rounded-md text-xs font-medium bg-charcoal-700 text-neutral-100 border border-charcoal-600">All</button>
-        <button onclick="loadJobs('pending')" class="filter-btn px-3 py-1 rounded-md text-xs font-medium bg-charcoal-900 text-neutral-400 border border-charcoal-700/50 hover:border-charcoal-600">Pending</button>
-        <button onclick="loadJobs('saved')" class="filter-btn px-3 py-1 rounded-md text-xs font-medium bg-charcoal-900 text-amber-400/90 border border-charcoal-700/50 hover:border-charcoal-600">Saved</button>
-        <button onclick="loadJobs('applied')" class="filter-btn px-3 py-1 rounded-md text-xs font-medium bg-charcoal-900 text-emerald-400/90 border border-charcoal-700/50 hover:border-charcoal-600">Applied</button>
-        <button onclick="loadJobs('pass')" class="filter-btn px-3 py-1 rounded-md text-xs font-medium bg-charcoal-900 text-neutral-500 border border-charcoal-700/50 hover:border-charcoal-600">Passed</button>
+    <div class="flex items-center justify-between flex-wrap gap-3">
+      <div class="flex items-center gap-3">
+        <span class="text-[11px] font-mono uppercase tracking-wider text-neutral-500">Status:</span>
+        <div class="flex flex-wrap gap-2" id="filter-buttons">
+          <button onclick="loadJobs('all')" class="filter-btn px-3 py-1 rounded-md text-xs font-medium bg-charcoal-700 text-neutral-100 border border-charcoal-600">All</button>
+          <button onclick="loadJobs('pending')" class="filter-btn px-3 py-1 rounded-md text-xs font-medium bg-charcoal-900 text-neutral-400 border border-charcoal-700/50 hover:border-charcoal-600">Pending</button>
+          <button onclick="loadJobs('saved')" class="filter-btn px-3 py-1 rounded-md text-xs font-medium bg-charcoal-900 text-amber-400/90 border border-charcoal-700/50 hover:border-charcoal-600">Saved</button>
+          <button onclick="loadJobs('applied')" class="filter-btn px-3 py-1 rounded-md text-xs font-medium bg-charcoal-900 text-emerald-400/90 border border-charcoal-700/50 hover:border-charcoal-600">Applied</button>
+          <button onclick="loadJobs('pass')" class="filter-btn px-3 py-1 rounded-md text-xs font-medium bg-charcoal-900 text-neutral-500 border border-charcoal-700/50 hover:border-charcoal-600">Passed</button>
+        </div>
+      </div>
+      <div class="text-[11px] font-mono text-neutral-400 flex items-center gap-1.5">
+        <span class="inline-block w-2 h-2 rounded-full bg-emerald-500"></span>
+        <span>Last 7 Days &bull; Match &ge; 70% &bull; Newest First</span>
       </div>
     </div>
 
@@ -201,12 +211,24 @@ def index():
   <script>
     let activeFilter = 'all';
 
+    function parseJobDate(isoString) {
+      if (!isoString) return null;
+      let s = String(isoString).trim();
+      if (/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(s)) {
+        s = s.replace(' ', 'T') + 'Z';
+      }
+      const d = new Date(s);
+      return isNaN(d.getTime()) ? null : d;
+    }
+
     function formatTime(isoString) {
       if (!isoString) return 'recently';
       try {
-        const date = new Date(isoString);
+        const date = parseJobDate(isoString);
+        if (!date) return 'recently';
         const now = new Date();
         const diffMs = now - date;
+        if (diffMs < 0) return 'just now';
         const diffHrs = Math.floor(diffMs / (1000 * 60 * 60));
         if (diffHrs < 1) return 'just now';
         if (diffHrs < 24) return `${diffHrs}h ago`;
@@ -218,7 +240,7 @@ def index():
     }
 
     async function purgeJunk() {
-  if (!confirm('Purge all unreviewed postings with score < 50% and non-English titles?')) return;
+  if (!confirm('Purge all unreviewed postings with score < 70% and non-English titles?')) return;
   const res = await fetch('/api/maintenance/purge-junk', { method: 'POST' });
   const data = await res.json();
   alert(`Purged ${data.purged_count} low-value / noisy postings!`);
@@ -253,16 +275,49 @@ def index():
 
     async function loadJobs(status = 'all') {
       activeFilter = status;
-      const res = await fetch(`/api/jobs?status=${status}`);
+
+      // Highlight active filter pill
+      document.querySelectorAll('#filter-buttons .filter-btn').forEach(btn => {
+        const isCurrent = btn.getAttribute('onclick')?.includes(`'${status}'`);
+        if (isCurrent) {
+          btn.className = 'filter-btn px-3 py-1 rounded-md text-xs font-medium bg-charcoal-700 text-neutral-100 border border-charcoal-600';
+        } else {
+          btn.className = 'filter-btn px-3 py-1 rounded-md text-xs font-medium bg-charcoal-900 text-neutral-400 border border-charcoal-700/50 hover:border-charcoal-600';
+        }
+      });
+
+      const res = await fetch(`/api/jobs?status=${status}&days=7&min_score=70`);
       const jobs = await res.json();
       const grid = document.getElementById('job-grid');
       
-      if (jobs.length === 0) {
-        grid.innerHTML = '<div class="col-span-full py-20 text-center font-mono text-xs text-neutral-600">No jobs matching current filter.</div>';
+      const now = new Date();
+      const sevenDaysMs = 7 * 24 * 60 * 60 * 1000;
+
+      // Filter: only postings of last 7 days and match score >= 70% (unless explicitly inspecting passed jobs)
+      const filteredJobs = jobs.filter(j => {
+        if (!j.created_at) return false;
+        if (status !== 'pass' && j.match_score < 70) return false;
+        const jobDate = parseJobDate(j.created_at);
+        if (!jobDate) return false;
+        const diffMs = now - jobDate;
+        return diffMs >= -60000 && diffMs <= sevenDaysMs;
+      });
+
+      // Sort: dates order in descending order (newest first)
+      filteredJobs.sort((a, b) => {
+        const dateA = parseJobDate(a.created_at);
+        const dateB = parseJobDate(b.created_at);
+        const timeA = dateA ? dateA.getTime() : 0;
+        const timeB = dateB ? dateB.getTime() : 0;
+        return timeB - timeA;
+      });
+
+      if (filteredJobs.length === 0) {
+        grid.innerHTML = '<div class="col-span-full py-20 text-center font-mono text-xs text-neutral-600">No jobs posted in the last 7 days matching current filter.</div>';
         return;
       }
 
-      grid.innerHTML = jobs.map(j => `
+      grid.innerHTML = filteredJobs.map(j => `
   <div class="bg-charcoal-900 border border-charcoal-700/60 rounded-xl p-5 flex flex-col justify-between hover:border-charcoal-600 transition-colors shadow-sm h-[290px]">
     <div class="space-y-2.5 overflow-hidden">
       <div class="flex justify-between items-center">
@@ -272,7 +327,7 @@ def index():
           'bg-charcoal-800 text-neutral-400 border border-charcoal-700'
         }">Score: ${j.match_score}</span>
         <div class="flex items-center gap-2">
-          <span class="text-[10px] font-mono text-neutral-500">${formatTime(j.created_at)}</span>
+          <span class="text-[10px] font-mono text-neutral-500" title="${j.created_at}">${formatTime(j.created_at)}</span>
           <span class="text-[10px] font-mono text-neutral-500 uppercase tracking-wider">&bull; ${j.source || 'web'}</span>
         </div>
       </div>
@@ -366,7 +421,7 @@ def index():
     """
 @app.post("/api/maintenance/purge-junk")
 def purge_junk():
-    return db.purge_low_score_and_junk(min_score=50)
+    return db.purge_low_score_and_junk(min_score=70)
 
 if __name__ == "__main__":
     import uvicorn

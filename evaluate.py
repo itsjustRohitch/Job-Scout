@@ -137,14 +137,16 @@ def reset_and_reevaluate(db_path: str = "jobs.db"):
         tags = json.loads(tags_json) if tags_json else []
         score, reason = score_job(title, tags, desc or "")
 
+        new_status = 'pass' if score < 70 else 'pending'
         cursor.execute("""
             UPDATE jobs 
-            SET match_score = ?, evaluation_reason = ?, is_reviewed = 1 
+            SET match_score = ?, evaluation_reason = ?, is_reviewed = 1,
+                application_status = CASE WHEN application_status IN ('saved', 'applied') THEN application_status ELSE ? END
             WHERE id = ?;
-        """, (score, reason, job_id))
+        """, (score, reason, new_status, job_id))
 
-        # Show anything with a viable score of 50 or above
-        if score >= 50:
+        # Show anything with a viable score of 70 or above
+        if score >= 70:
             top_matches += 1
             print(f"🎯 [{score}/100] {title} @ {company}")
             print(f"   Reason: {reason}")
@@ -179,13 +181,15 @@ def run_evaluation_loop(db_path: str = "jobs.db"):
         tags = json.loads(tags_json) if tags_json else []
         score, reason = score_job(title, tags, desc or "")
 
+        new_status = 'pass' if score < 70 else 'pending'
         cursor.execute("""
             UPDATE jobs 
-            SET match_score = ?, evaluation_reason = ?, is_reviewed = 1 
+            SET match_score = ?, evaluation_reason = ?, is_reviewed = 1,
+                application_status = CASE WHEN application_status IN ('saved', 'applied') THEN application_status ELSE ? END
             WHERE id = ?;
-        """, (score, reason, job_id))
+        """, (score, reason, new_status, job_id))
 
-        if score >= 50:
+        if score >= 70:
             scored_count += 1
 
     conn.commit()

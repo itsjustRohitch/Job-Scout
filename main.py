@@ -26,7 +26,7 @@ def run_scout_cycle():
         run_evaluation_loop()
 
         print("\n📤 Phase 3: Generating LLM dossiers and dispatching alerts...")
-        dispatch_top_jobs(min_score=60, limit=3)
+        dispatch_top_jobs(min_score=70, limit=3)
 
         print(f"\n✅ [CYCLE COMPLETE] Finished at {datetime.now().strftime('%H:%M:%S')}.\n")
 

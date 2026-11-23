@@ -169,7 +169,7 @@ def prune_duplicates_and_stale(days_stale: int = 30) -> dict:
         conn.commit()
         return {"duplicates_purged": dupes_removed}
 
-def purge_low_score_and_junk(min_score: int = 50) -> dict:
+def purge_low_score_and_junk(min_score: int = 70) -> dict:
     """
     Deletes:
     1. Unreviewed/pending jobs with match_score < min_score.
