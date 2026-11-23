@@ -6,7 +6,7 @@ Operates with a headless scraping layer, zero-cost local inference via **Ollama 
 
 ## 🏗️ System Architecture
 
-![JobScout System Architecture](assets/architecture.png)
+![JobScout System Architecture](assets/architecture.jpg)
 
 ```
 [ 6 Heterogeneous Ingestion Feeds ]
