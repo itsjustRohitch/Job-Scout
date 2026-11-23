@@ -4,9 +4,9 @@ An autonomous, production-hardened job scouting pipeline designed to continuousl
 
 Operates with a headless scraping layer, zero-cost local inference via **Ollama (Gemma 3:4B)**, multi-modal control interfaces (interactive **Telegram C2 Bot**, custom zero-framework **ReAct Agent**, and matte charcoal **FastAPI Mission Control**), and a decoupled SQLite persistence layer.
 
----
-
 ## 🏗️ System Architecture
+
+![JobScout System Architecture](assets/architecture.png)
 
 ```
 [ 6 Heterogeneous Ingestion Feeds ]
@@ -49,28 +49,28 @@ Operates with a headless scraping layer, zero-cost local inference via **Ollama 
 └──────────────────┘ └──────────────┘ └──────────────────────┘
 ```
 
----
-
 ## 🎯 Key Engineering Decisions
 
 ### 1. Headless, Zero-Selenium LinkedIn Guest Scraping
+
 * **Challenge:** Scraping LinkedIn typically relies on browser automation drivers (Selenium, Playwright), consuming 500MB+ RAM and frequently hitting bot challenges or login walls.
 * **Architecture:** Reverse-engineered LinkedIn's unauthenticated public guest endpoints. The ingestion stream captures lightweight metadata cards, while `enricher.py` performs on-demand extraction of raw HTML descriptions (7,000+ characters) with zero browser automation overhead.
 
 ### 2. Zero-Cost, Privacy-Preserving Local LLM Orchestration
+
 * **Challenge:** Relying on commercial LLM APIs (OpenAI, Anthropic) incurs recurring costs and hard rate limits during high-volume ingestion sweeps.
 * **Architecture:** Self-hosted **Gemma 3:4B** executed locally using **Ollama** over raw `httpx` calls. Evaluates job-to-profile alignment through structured scoring prompts, creates technical candidate dossiers, and generates tailored 120-word cold outreach messages citing specific engineering projects directly from `profile.json`.
 
 ### 3. Custom Zero-Framework ReAct Agent (`agent.py`)
+
 * **Challenge:** Heavy agent frameworks add unnecessary dependency bloat and obscure tool-execution control flow.
 * **Architecture:** Built a pure-Python Reason + Act (ReAct) supervisor loop with regex action parsing and a direct tool registry (`get_unreviewed_jobs`, `enrich_job`, `evaluate_and_pitch`, `dispatch_alert`, `update_status`) backed by SQLite state.
 
 ### 4. Strict 70% Fit Cutoff & Decoupled Persistence
+
 * **Quality Filtering:** Postings scoring `< 70%` against profile criteria are automatically discarded as `pass` during evaluation, shielding the feed from low-signal noise.
 * **Automated Maintenance:** Features built-in cross-source fuzzy deduplication (`GROUP BY position, company`) and one-click database pruning (`Purge < 70%` and non-Latin script filtering).
 * **Safe Migrations:** Employs non-destructive SQLite schema migrations using `PRAGMA table_info` checks to evolve table definitions without wiping historical tracking data.
-
----
 
 ## 🛠️ Tech Stack
 
@@ -82,9 +82,7 @@ Operates with a headless scraping layer, zero-cost local inference via **Ollama 
 * **Agentic Orchestration:** Custom pure-Python tool-calling ReAct loop (`agent.py`)
 * **Web Services:** FastAPI, Uvicorn, Tailwind CSS
 * **Control & Telemetry:** Telegram Bot API (long-polling worker with inline callbacks)
-* **DevOps & Containers:** Docker, Docker Compose, GitHub Actions Cron
-
----
+* **Automation & Containers:** Docker, Docker Compose, GitHub Actions (Scheduled Cron)
 
 ## 📂 Project Structure
 
@@ -99,7 +97,9 @@ Job-Scout/
 │   ├── jobicy_adapter.py         # Jobicy API client
 │   ├── linkedin_guest_adapter.py # Headless LinkedIn guest crawler
 │   ├── remotive_adapter.py       # Remotive developer stream
-│   └── wwr_adapter.py            # We Work Remotely RSS reader
+│   └── wwr_adapter.py           # We Work Remotely RSS reader
+├── assets/
+│   └── architecture.png          # System architecture & data flow diagram
 ├── scripts/                      # Operational utilities
 │   ├── run_scout.bat             # Manual execution script with logging
 │   ├── start_scout.bat           # Headless startup launcher
@@ -121,8 +121,6 @@ Job-Scout/
 ├── requirements.txt              # Project dependencies
 └── .env.example                  # Configuration template
 ```
-
----
 
 ## 🚀 Quickstart & Setup
 
@@ -198,8 +196,6 @@ ollama serve
   python agent.py
   ```
 
----
-
 ## 🐳 Docker Deployment
 
 To run JobScout in production with Docker Compose:
@@ -214,8 +210,6 @@ docker compose logs -f
 # Stop containers
 docker compose down
 ```
-
----
 
 ## 🤖 Telegram Bot Commands
 
